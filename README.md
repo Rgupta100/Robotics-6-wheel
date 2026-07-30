@@ -37,22 +37,75 @@ x = { 0.3,  0.0, -0.3,   0.3,  0.0, -0.3 }   # front, mid, back
 y = { 0.2,  0.2,  0.2,  -0.2, -0.2, -0.2 }   # left ×3, right ×3
 ```
 
+## Module optimisation
+
+Solving the ICR gives a *raw* answer that is often the hard way round. Three
+corrections sit on top of it:
+
+**Shortest-path flip.** If a module would have to swing more than 90° to reach
+its target heading, point it the opposite way and drive the wheel backwards
+instead. The ground velocity vector is identical and no module ever rotates more
+than a quarter turn. A module asked for 170° goes to −10° at reversed speed.
+
+**Singularity hold.** `atan2(0, 0)` is undefined and returns 0, which would snap
+every module to straight-ahead the instant the robot stops. Below 1e-3 the
+previous angle is held and speed is zeroed, so the modules stay where they are.
+
+**Speed desaturation.** If any module is asked for more than `max_motor_speed`,
+*all six* are scaled by the same factor. Clipping one module alone would change
+the direction the robot actually travels.
+
 ## Layout
 
 ```
 src/my_swerve_control/
-  src/swerve_optimizer.cpp   ROS 2 node — publishes to the steer/drive controllers
-  src/Testing.cpp            standalone algorithm sandbox, no ROS dependency
+  src/swerve_optimizer.cpp    ROS 2 node — /cmd_vel in, steer + drive commands out
+  src/Testing.cpp             standalone algorithm sandbox, no ROS dependency
+  test/test_kinematics.cpp    19 assertions over the maths, no ROS dependency
   CMakeLists.txt
   package.xml
 ```
 
-`swerve_optimizer.cpp` runs a 50 Hz timer and publishes `Float64MultiArray` to
-`/swerve_steer_controller/commands` and `/swerve_drive_controller/commands`.
+`swerve_optimizer.cpp` subscribes to `/cmd_vel` and runs a 50 Hz timer,
+publishing `Float64MultiArray` to `/swerve_steer_controller/commands` and
+`/swerve_drive_controller/commands`. It fails safe to a stop if no command
+arrives within `cmd_timeout`.
 
 `Testing.cpp` is where the maths was worked out — it compiles with plain `g++`
 and prints the six (angle, velocity) pairs for a given twist, which made it
 possible to check the solver by hand before involving Gazebo.
+
+### Parameters
+
+| Name | Default | Meaning |
+|---|---|---|
+| `wheel_radius` | 0.05 | metres, converts ground speed to motor rad/s |
+| `pivot_x`, `pivot_y` | 0.0, 0.0 | pivot point in the body frame |
+| `max_motor_speed` | 20.0 | rad/s, desaturation ceiling |
+| `cmd_timeout` | 0.5 | seconds before `/cmd_vel` silence stops the robot |
+
+## Tests
+
+`test/test_kinematics.cpp` covers angle wrapping, the flip, the singularity
+hold, desaturation, and the zero-scrubbing property itself — including a
+73 × 73 sweep of every start/target angle pair checking that the flip never
+exceeds a quarter turn *and* leaves the ground velocity vector unchanged.
+
+Zero-scrubbing is asserted directly: for pure rotation, and for rotation about
+an arbitrary off-centre pivot, every module's heading must be perpendicular to
+its own radius from the ICR. That is what "no wheel drags sideways" means
+geometrically.
+
+Standalone, no ROS needed:
+
+```bash
+g++ -std=c++17 -Wall -Wextra -O2 src/my_swerve_control/test/test_kinematics.cpp -o test_kinematics
+./test_kinematics
+```
+
+Or through colcon: `colcon test --packages-select my_swerve_control`.
+
+All 19 assertions pass as of 2026-07-29.
 
 ## Build
 
@@ -73,26 +126,23 @@ g++ src/my_swerve_control/src/Testing.cpp -o testing && ./testing
 
 Read this before assuming the node is production-ready.
 
-- **The twist is hardcoded.** `kinematics_loop()` uses `Vx = 0.2, Vy = 0.2,
-  ω = 0.0`. It does not subscribe to `/cmd_vel` yet — that's the next change.
-- **Module-angle optimisation is written but commented out** in `Testing.cpp`.
-  `optimize_module()` wraps the steering delta to [−180°, 180°] and, when the
-  required turn exceeds 90°, flips the module to `θ ± 180°` and negates the
-  drive velocity — so a module never swings more than a quarter turn to reach a
-  heading. Not yet ported into the ROS node.
-- **Singularity handling is written but commented out.** `singularity()` holds
-  the previous steering angle when commanded speed falls below 0.001 rather
-  than letting `atan2(0, 0)` snap modules to zero — this is the near-ICR /
-  stopped case.
-- **Speed desaturation is written but commented out.** `normalise_speeds()`
-  scales all six velocities down proportionally when any module exceeds the
-  motor limit, preserving the direction of travel.
+- **No simulation side exists.** No launch file, URDF, `ros2_control` config or
+  Gazebo world survived the 2026-07-18 reset (see below), so the controllers
+  this node publishes to are not defined anywhere in this repo. It builds and
+  the maths is tested, but it will not drive anything until that is rebuilt.
+  **This is the next piece of work.**
 - **No efficiency benchmark exists in this repo.** There is no baseline
   comparison and no measurement harness here. Any efficiency figure quoted
   elsewhere is not reproducible from this code as it stands.
-- **Units are mixed by design and it's a trap.** `Testing.cpp` outputs degrees
-  (`* 180 / M_PI`); `swerve_optimizer.cpp` publishes raw radians from `atan2`.
-  Don't copy a constant from one to the other.
+- **Zero-scrubbing is proved geometrically, not empirically.** The test asserts
+  every module is perpendicular to its ICR radius, which is the property. It has
+  not been re-observed in simulation since the reset.
+- **Units are mixed and it's a trap.** `Testing.cpp` works in degrees
+  (`* 180 / M_PI`); `swerve_optimizer.cpp` and the tests work in radians. Don't
+  copy a constant from one to the other.
+- `Testing.cpp` is kept as the original working sandbox. Its versions of the
+  three corrections are the degree-based originals; the radian ports in the node
+  are what actually run.
 
 ## Recovery note
 
@@ -109,7 +159,7 @@ saved versions** across the four files:
 | `CMakeLists.txt` | 8 | 2026-02-22 13:17 | 2026-03-05 22:35 |
 | `package.xml` | 2 | 2026-02-22 13:17 | 2026-03-05 22:37 |
 
-The files here are the newest version of each. The intermediate versions are
+The tracked files are the newest version of each. Every intermediate version is
 kept offline and are not part of this repository.
 
 Nothing outside those four files survived — no launch files, no URDF, no

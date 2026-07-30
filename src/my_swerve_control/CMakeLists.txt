@@ -41,6 +41,10 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # Kinematics maths, no ROS dependency -- also builds standalone with g++.
+  add_executable(test_kinematics test/test_kinematics.cpp)
+  add_test(NAME kinematics COMMAND test_kinematics)
 endif()
 
 ament_package()
