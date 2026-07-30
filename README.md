@@ -107,11 +107,78 @@ Or through colcon: `colcon test --packages-select my_swerve_control`.
 
 All 19 assertions pass as of 2026-07-29.
 
+## Simulation
+
+`swerve_sim` provides the Gazebo side: a six-module URDF, `ros2_control`
+configuration, a flat world, and a launch file that chains everything off the
+spawn event.
+
+```bash
+ros2 launch swerve_sim sim.launch.py
+ros2 launch swerve_sim sim.launch.py gui:=false     # headless
+ros2 launch swerve_sim sim.launch.py solver:=false  # drive it by hand
+```
+
+Then drive it:
+
+```bash
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
+  '{linear: {x: 0.4, y: 0.2}, angular: {z: 0.3}}' -r 20
+```
+
+> [!warning] Joint order is load-bearing
+> `ForwardCommandController` maps `Float64MultiArray[i]` onto `joints[i]`. The
+> `joints:` lists in `swerve_sim/config/controllers.yaml` are in the same order
+> the node fills its arrays — front_left, mid_left, back_left, front_right,
+> mid_right, back_right. Reorder one without the other and the robot still
+> moves, just driving the wrong wheels. It does not look like a failure.
+
+## Scrub benchmark
+
+Scrub is the component of a wheel's ground velocity perpendicular to the way it
+is pointing — a wheel not pointing where it is going has to drag sideways, which
+is wasted energy and tyre wear. It is the thing a swerve drive exists to
+eliminate.
+
+An *ideal* swerve has exactly zero scrub by construction, so "100% reduction"
+would be true and meaningless. Real modules cannot snap instantly, so
+`benchmark/scrub_benchmark.cpp` rate-limits the steering and measures the scrub
+that survives during transients. The baseline is a fixed-heading (skid-steer)
+rover — what the platform does with no steering solver.
+
+```bash
+g++ -std=c++17 -O2 benchmark/scrub_benchmark.cpp -o scrub_benchmark
+./scrub_benchmark
+./scrub_benchmark --rate 2 --csv trace.csv
+```
+
+Over a 24 s path (straight → figure-eight → strafe → spin in place), at a
+steering rate limit of 6 rad/s and dt = 1 ms:
+
+| | scrub (m) | roll (m) |
+|---|---|---|
+| fixed heading (baseline) | 25.09 | 63.36 |
+| swerve (rate-limited) | 0.63 | 79.28 |
+
+**97.5% scrub reduction.** Sensitivity, since the steering rate is the
+assumption carrying the result:
+
+| steering rate (rad/s) | 1 | 2 | 4 | 6 | 10 | 20 |
+|---|---|---|---|---|---|---|
+| scrub reduction | 85.0% | 92.5% | 96.3% | 97.5% | 98.5% | 99.3% |
+
+Stable to 0.1% across timesteps from 10 ms down to 0.5 ms. Even a slow 1 rad/s
+module removes 85% of the scrub.
+
+The residual is transient only — it occurs while modules are still slewing
+toward their commanded heading, which is exactly what you would expect and is
+why the number is not 100%.
+
 ## Build
 
 ```bash
 cd swerve_ws
-colcon build --packages-select my_swerve_control
+colcon build
 source install/setup.bash
 ros2 run my_swerve_control swerve_optimizer
 ```
@@ -126,17 +193,20 @@ g++ src/my_swerve_control/src/Testing.cpp -o testing && ./testing
 
 Read this before assuming the node is production-ready.
 
-- **No simulation side exists.** No launch file, URDF, `ros2_control` config or
-  Gazebo world survived the 2026-07-18 reset (see below), so the controllers
-  this node publishes to are not defined anywhere in this repo. It builds and
-  the maths is tested, but it will not drive anything until that is rebuilt.
-  **This is the next piece of work.**
-- **No efficiency benchmark exists in this repo.** There is no baseline
-  comparison and no measurement harness here. Any efficiency figure quoted
-  elsewhere is not reproducible from this code as it stands.
+- **The simulation has been rebuilt but never run.** The original launch files,
+  URDF, `ros2_control` config and Gazebo world were destroyed in the 2026-07-18
+  reset (see below). `swerve_sim` is a fresh reconstruction written 2026-07-29
+  on a machine with **no ROS 2 and no WSL**, so it has never been through
+  `colcon build` or Gazebo. Treat it as unverified until it comes up: expect to
+  fix package paths, plugin names and controller spawn timing on first run.
 - **Zero-scrubbing is proved geometrically, not empirically.** The test asserts
-  every module is perpendicular to its ICR radius, which is the property. It has
-  not been re-observed in simulation since the reset.
+  every module is perpendicular to its ICR radius, which is the property itself.
+  It has not been re-observed in Gazebo since the reset.
+- **The benchmark is analytic, not simulated.** It integrates the kinematics
+  with a steering rate limit; it does not model tyre slip, actuator lag beyond
+  the rate limit, mass, or ground compliance. It is an upper bound on how much
+  scrub the solver removes, and the number should be re-measured in Gazebo
+  before being quoted as a physical result.
 - **Units are mixed and it's a trap.** `Testing.cpp` works in degrees
   (`* 180 / M_PI`); `swerve_optimizer.cpp` and the tests work in radians. Don't
   copy a constant from one to the other.
@@ -159,8 +229,7 @@ saved versions** across the four files:
 | `CMakeLists.txt` | 8 | 2026-02-22 13:17 | 2026-03-05 22:35 |
 | `package.xml` | 2 | 2026-02-22 13:17 | 2026-03-05 22:37 |
 
-The tracked files are the newest version of each. Every intermediate version is
-kept offline, outside this repository.
+The tracked files are the newest version of each. Every intermediate version is kept offline, outside this repository.
 
 Nothing outside those four files survived — no launch files, no URDF, no
 `ros2_control` config, and no Gazebo world. So the controllers this node

@@ -30,9 +30,13 @@ ament_target_dependencies(swerve_optimizer
 # Use target_link_libraries for non-Ament packages like Eigen
 target_link_libraries(swerve_optimizer Eigen3::Eigen)
 
+# Scrub benchmark. No ROS dependency -- also builds standalone with g++.
+add_executable(scrub_benchmark benchmark/scrub_benchmark.cpp)
+
 # 4. INSTALL
 install(TARGETS
   swerve_optimizer
+  scrub_benchmark
   DESTINATION lib/${PROJECT_NAME}
 )
 
