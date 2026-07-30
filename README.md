@@ -160,7 +160,7 @@ saved versions** across the four files:
 | `package.xml` | 2 | 2026-02-22 13:17 | 2026-03-05 22:37 |
 
 The tracked files are the newest version of each. Every intermediate version is
-kept offline and are not part of this repository.
+kept offline, outside this repository.
 
 Nothing outside those four files survived — no launch files, no URDF, no
 `ros2_control` config, and no Gazebo world. So the controllers this node
